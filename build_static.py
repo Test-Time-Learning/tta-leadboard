@@ -148,13 +148,22 @@ def normalize(payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
             or "classification")
     metric_key = TASK_METRIC.get(task, TASK_METRIC["classification"])[0]
 
+    # An efficiency (profile) record exists only to carry clean timing/memory. Its
+    # accuracy score is an unreliable by-product of a single stateful pass — for
+    # unstable methods it can diverge wildly from the real per-seed run (deyo
+    # continual: profile err 11 vs seed0 err 77). Null the score (and per-stream
+    # scores) here so ONLY performance seedN.json records feed the leaderboard —
+    # symmetric with the timing nulling on performance records above. `result_kind`
+    # goes into the dedup key (see main) so this null-score profile record lives
+    # alongside seed0 instead of shadowing it.
     return {
         "method": method,
         "task": task,
+        "result_kind": "efficiency" if is_efficiency else "performance",
         # Unified ranking metric: `score` carries the task's primary metric
         # value (error / mIoU / mAP). Ranking direction and column label are
         # derived in the frontend from `task` (taskLowerWins/taskMetricLabel).
-        "score": metrics.get(metric_key),
+        "score": None if is_efficiency else metrics.get(metric_key),
         "dataset": dataset,
         "shift": shift,
         "source": source_model.get("name") or "—",
@@ -163,7 +172,7 @@ def normalize(payload: dict[str, Any], path: Path) -> dict[str, Any] | None:
         "adapter_s": adapter_s,
         "peak_gpu_mb": peak_gpu_mb,
         "optimizer_params": parameters.get("optimizer"),
-        "per_stream": {
+        "per_stream": {} if is_efficiency else {
             stream: {"score": (s or {}).get(metric_key)}
             for stream, s in per_stream.items()
         },
@@ -211,7 +220,10 @@ def main():
         # Include source model in the dedup key — the model-axis stores multiple
         # source models per (method, dataset, shift, seed); without it they
         # collide and only one model survives (the multi-model view vanishes).
-        key = (rec["method"], rec["source"], rec["dataset"], rec["shift"], rec["seed"])
+        # Include result_kind so a profile (efficiency, seed0, timing-only) record
+        # coexists with its performance seed0 sibling instead of shadowing it — the
+        # efficiency record supplies timing, the performance record supplies score.
+        key = (rec["method"], rec["source"], rec["dataset"], rec["shift"], rec["seed"], rec["result_kind"])
         if key in seen:
             continue
         seen.add(key)
